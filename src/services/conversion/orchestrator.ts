@@ -22,6 +22,7 @@ import { createTableConverter } from './converters/table.js';
 import { ConverterRegistry } from './registry.js';
 import { logger } from '../../utils/logger';
 import { generateSlideId } from '../../utils/id-generator';
+import { emuToPixels, DEFAULT_SLIDE_WIDTH, DEFAULT_SLIDE_HEIGHT, STANDARD_SIZES } from '../../utils/coordinates';
 
 /**
  * Conversion orchestrator options
@@ -104,6 +105,31 @@ export class ConversionOrchestrator {
       mediaCount: extracted.media.size,
     });
 
+    // 获取PPTX原始尺寸（EMU）
+    const pptxSize = this.extractSlideSize(extracted);
+
+    // 确定目标尺寸
+    const targetSize = this.calculateTargetSize(pptxSize);
+
+    // 计算缩放比例
+    const scaleX = targetSize.width / emuToPixels(pptxSize.width);
+    const scaleY = targetSize.height / emuToPixels(pptxSize.height);
+
+    // 存储到context供转换器使用
+    (context as any)._scaleX = scaleX;
+    (context as any)._scaleY = scaleY;
+    (context as any)._pptxSize = pptxSize;
+    (context as any)._targetSize = targetSize;
+
+    // 更新context中的幻灯片尺寸
+    context.slideSize = targetSize;
+
+    logger.debug('Slide size calculated', {
+      pptxSize: `${pptxSize.width}x${pptxSize.height} EMU`,
+      targetSize: `${targetSize.width}x${targetSize.height} px`,
+      scale: `${scaleX.toFixed(4)}x${scaleY.toFixed(4)}`,
+    });
+
     // Parse all slides
     const parsedSlides = parseAllSlides(extracted);
 
@@ -113,8 +139,8 @@ export class ConversionOrchestrator {
     // Build presentation
     const presentation: PPTistPresentation = {
       version: 'latest' as any, // PPTistVersion.LATEST
-      width: context.slideSize?.width || 1280,
-      height: context.slideSize?.height || 720,
+      width: targetSize.width,
+      height: targetSize.height,
       slides,
     };
 
@@ -124,6 +150,38 @@ export class ConversionOrchestrator {
     });
 
     return presentation;
+  }
+
+  /**
+   * 从PPTX提取幻灯片尺寸
+   */
+  private extractSlideSize(extracted: ExtractedPPTX): { width: number; height: number } {
+    // 尝试从presentation.xml读取实际尺寸
+    // TODO: 解析 presentation.xml 获取 sldSz 属性
+    // 默认16:9尺寸（EMU）
+    return { width: DEFAULT_SLIDE_WIDTH, height: DEFAULT_SLIDE_HEIGHT };
+  }
+
+  /**
+   * 根据原始比例计算目标尺寸
+   */
+  private calculateTargetSize(pptxSize: { width: number; height: number }): { width: number; height: number } {
+    const ratio = pptxSize.width / pptxSize.height;
+
+    // PPTist标准尺寸
+    if (Math.abs(ratio - 16/9) < 0.01) {
+      return { width: STANDARD_SIZES['16:9'].width, height: STANDARD_SIZES['16:9'].height };
+    } else if (Math.abs(ratio - 4/3) < 0.01) {
+      return { width: STANDARD_SIZES['4:3'].width, height: STANDARD_SIZES['4:3'].height };
+    } else if (Math.abs(ratio - 16/10) < 0.01) {
+      return { width: STANDARD_SIZES['16:10'].width, height: STANDARD_SIZES['16:10'].height };
+    }
+
+    // 自定义比例，保持宽高比
+    return {
+      width: 1280,
+      height: Math.round(1280 / ratio),
+    };
   }
 
   /**
@@ -137,6 +195,9 @@ export class ConversionOrchestrator {
 
     for (const parsedSlide of parsedSlides) {
       try {
+        // Update current slide index for media resolution
+        (context as any)._currentSlideIndex = parsedSlide.index;
+
         const slide = await this.convertSlide(parsedSlide, context);
         slides.push(slide);
       } catch (error) {

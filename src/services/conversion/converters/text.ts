@@ -11,10 +11,72 @@ import { BaseElementConverter } from '../base-converter';
 import { ElementType, type ConversionContext } from '../../../types/converters';
 import type { TextElement } from '../../../types/pptist';
 import type { ParsedElement } from '../../../services/pptx/parser';
-import { parseOfficeColor } from '../../../utils/color';
-import { fontSizePointsToPixels } from '../../../utils/coordinates';
+import { parseOfficeColor, normalizeColor } from '../../../utils/color';
+import { emuToPixels, fontSizePointsToPixels } from '../../../utils/coordinates';
 import { generateTrackedId, ID_PREFIXES } from '../../../utils/id-generator';
 import { logger } from '../../../utils/logger';
+
+/**
+ * PPTX字体到Web字体的映射
+ * 未在映射表中的字体将使用默认字体
+ */
+const FONT_FAMILY_MAP: Record<string, string> = {
+  // 中文字体
+  '微软雅黑': 'Microsoft YaHei',
+  '宋体': 'SimSun',
+  '黑体': 'SimHei',
+  '楷体': 'KaiTi',
+  '仿宋': 'FangSong',
+  '等线': 'DengXian',
+  '新宋体': 'NSimSun',
+  '华文黑体': 'STHeiti',
+  '华文宋体': 'STSong',
+  '华文楷体': 'STKaiti',
+
+  // 英文字体
+  'Arial': 'Arial',
+  'Times New Roman': 'Times New Roman',
+  'Calibri': 'Calibri',
+  'Cambria': 'Cambria',
+  'Courier New': 'Courier New',
+  'Georgia': 'Georgia',
+  'Verdana': 'Verdana',
+  'Tahoma': 'Tahoma',
+  'Trebuchet MS': 'Trebuchet MS',
+  'Impact': 'Impact',
+  'Comic Sans MS': 'Comic Sans MS',
+  'Century Gothic': 'Century Gothic',
+  'Palatino Linotype': 'Palatino Linotype',
+};
+
+/** 默认字体 */
+const DEFAULT_FONT = 'Arial';
+
+/**
+ * 映射字体名称
+ * - 在映射表中：返回映射的字体
+ * - 不在映射表：返回默认字体
+ */
+function mapFontFamily(fontName: string | undefined): string {
+  if (!fontName) return DEFAULT_FONT;
+
+  // 检查是否有直接映射
+  if (FONT_FAMILY_MAP[fontName]) {
+    return FONT_FAMILY_MAP[fontName];
+  }
+
+  // 检查大小写不敏感的映射
+  const lowerFontName = fontName.toLowerCase();
+  for (const [key, value] of Object.entries(FONT_FAMILY_MAP)) {
+    if (key.toLowerCase() === lowerFontName) {
+      return value;
+    }
+  }
+
+  // 未映射的字体使用默认字体
+  logger.debug(`Font "${fontName}" not in mapping, using default: ${DEFAULT_FONT}`);
+  return DEFAULT_FONT;
+}
 
 /**
  * Text converter implementation
@@ -40,16 +102,23 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
       hasTextBox: !!element.textBox,
     });
 
+    // Convert EMU to pixels (apply 96/72 scaling)
+    const x = emuToPixels(element.position?.x || 0);
+    const y = emuToPixels(element.position?.y || 0);
+    const width = emuToPixels(element.size?.width || 914400); // Default 1 inch
+    const height = emuToPixels(element.size?.height || 457200); // Default 0.5 inch
+
     const pptistElement: TextElement = {
       id: generateTrackedId(ID_PREFIXES.TEXT, undefined, element.id),
       type: 'text',
-      x: element.position?.x || 0,
-      y: element.position?.y || 0,
-      width: element.size?.width || 100,
-      height: element.size?.height || 50,
+      x,
+      y,
+      width,
+      height,
       rotate: element.rotation || 0,
       locked: element.locked || false,
       visible: !element.hidden,
+      zIndex: element.zIndex,
       defaultValue: this.extractTextContent(element),
     };
 
@@ -146,9 +215,9 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
       text: r.text || '',
     };
 
-    // Font family
+    // Font family - 使用字体映射
     if (r.font) {
-      run.fontFamily = r.font;
+      run.fontFamily = mapFontFamily(r.font);
     }
 
     // Font size (convert from points to pixels)
@@ -173,7 +242,7 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
 
     // Text color
     if (r.color) {
-      run.color = r.color;
+      run.color = normalizeColor(r.color);
     }
 
     return run;
@@ -223,16 +292,21 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
     if (!fill) return undefined;
 
     if (fill.type === 'solid' && fill.color) {
-      return {
+      const result: any = {
         type: 'solid',
-        color: fill.color,
+        color: normalizeColor(fill.color),
       };
+      // 传递透明度
+      if (fill.opacity !== undefined) {
+        result.opacity = fill.opacity;
+      }
+      return result;
     }
 
     if (fill.type === 'gradient') {
       return {
         type: 'gradient',
-        colors: fill.colors || [],
+        colors: (fill.colors || []).map((c: string) => normalizeColor(c)),
       };
     }
 
@@ -262,7 +336,7 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
     }
 
     if (stroke.color) {
-      pptistStroke.color = stroke.color;
+      pptistStroke.color = normalizeColor(stroke.color);
     }
 
     if (stroke.dashType) {
@@ -317,7 +391,7 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
     }
 
     if (shadow.color) {
-      pptistShadow.color = shadow.color;
+      pptistShadow.color = normalizeColor(shadow.color);
     }
 
     if (shadow.offset !== undefined) {
@@ -346,7 +420,7 @@ export class TextConverter extends BaseElementConverter<ParsedElement, TextEleme
     const pptistGlow: any = {};
 
     if (glow.color) {
-      pptistGlow.color = glow.color;
+      pptistGlow.color = normalizeColor(glow.color);
     }
 
     if (glow.radius !== undefined) {

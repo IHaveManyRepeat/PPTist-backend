@@ -11,6 +11,8 @@ import { BaseElementConverter } from '../base-converter';
 import { ElementType, type ConversionContext } from '../../../types/converters';
 import type { ShapeElement } from '../../../types/pptist';
 import type { ParsedElement } from '../../../services/pptx/parser';
+import { emuToPixels } from '../../../utils/coordinates';
+import { normalizeColor } from '../../../utils/color';
 import { generateTrackedId, ID_PREFIXES } from '../../../utils/id-generator';
 import { logger } from '../../../utils/logger';
 
@@ -38,16 +40,23 @@ export class ShapeConverter extends BaseElementConverter<ParsedElement, ShapeEle
       shapeType: element.shapeType,
     });
 
+    // Convert EMU to pixels (apply 96/72 scaling)
+    const x = emuToPixels(element.position?.x || 0);
+    const y = emuToPixels(element.position?.y || 0);
+    const width = emuToPixels(element.size?.width || 914400); // Default 1 inch
+    const height = emuToPixels(element.size?.height || 914400); // Default 1 inch
+
     const pptistElement: ShapeElement = {
       id: generateTrackedId(ID_PREFIXES.SHAPE, undefined, element.id),
       type: 'shape',
-      x: element.position?.x || 0,
-      y: element.position?.y || 0,
-      width: element.size?.width || 100,
-      height: element.size?.height || 100,
+      x,
+      y,
+      width,
+      height,
       rotate: element.rotation || 0,
       locked: element.locked || false,
       visible: !element.hidden,
+      zIndex: element.zIndex,
       fill: this.convertFill(element.fill),
       outline: this.convertOutline(element.stroke),
       text: this.convertTextContent(element),
@@ -74,16 +83,21 @@ export class ShapeConverter extends BaseElementConverter<ParsedElement, ShapeEle
     if (!fill) return undefined;
 
     if (fill.type === 'solid' && fill.color) {
-      return {
+      const result: any = {
         type: 'solid',
-        color: fill.color,
+        color: normalizeColor(fill.color),
       };
+      // 传递透明度
+      if (fill.opacity !== undefined) {
+        result.opacity = fill.opacity;
+      }
+      return result;
     }
 
     if (fill.type === 'gradient' && fill.colors) {
       return {
         type: 'gradient',
-        gradientColors: fill.colors,
+        gradientColors: fill.colors.map((c: string) => normalizeColor(c)),
         gradientAngle: 90,
         gradientPosition: 0,
       };
@@ -108,7 +122,7 @@ export class ShapeConverter extends BaseElementConverter<ParsedElement, ShapeEle
     const pptistOutline: any = {};
 
     if (stroke.width !== undefined) pptistOutline.width = stroke.width;
-    if (stroke.color) pptistOutline.color = stroke.color;
+    if (stroke.color) pptistOutline.color = normalizeColor(stroke.color);
     if (stroke.dashType) pptistOutline.style = this.convertDashStyle(stroke.dashType);
     if (stroke.lineCap) pptistOutline.lineCap = stroke.lineCap;
     if (stroke.lineJoin) pptistOutline.lineJoin = stroke.lineJoin;
@@ -217,7 +231,7 @@ export class ShapeConverter extends BaseElementConverter<ParsedElement, ShapeEle
   private convertShadow(shadow: any): any {
     const pptistShadow: any = {};
 
-    if (shadow.color) pptistShadow.color = shadow.color;
+    if (shadow.color) pptistShadow.color = normalizeColor(shadow.color);
     if (shadow.offset !== undefined) pptistShadow.offset = shadow.offset;
     if (shadow.blur !== undefined) pptistShadow.blur = shadow.blur;
     if (shadow.angle !== undefined) pptistShadow.angle = shadow.angle;
@@ -247,7 +261,7 @@ export class ShapeConverter extends BaseElementConverter<ParsedElement, ShapeEle
   private convertGlow(glow: any): any {
     const pptistGlow: any = {};
 
-    if (glow.color) pptistGlow.color = glow.color;
+    if (glow.color) pptistGlow.color = normalizeColor(glow.color);
     if (glow.radius !== undefined) pptistGlow.radius = glow.radius;
 
     return pptistGlow;

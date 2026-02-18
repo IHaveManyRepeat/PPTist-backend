@@ -203,7 +203,9 @@ export function parseSlideXML(
     // Extract elements from spTree (shape tree)
     const spTree = slideRoot['p:cSld']?.['p:spTree'];
     if (spTree) {
-      slide.elements = parseShapeTree(spTree, options);
+      // Extract raw spTree XML to preserve element order
+      const spTreeXml = extractSpTreeXml(xml);
+      slide.elements = parseShapeTree(spTree, spTreeXml, options);
     }
 
     // Extract transition
@@ -229,40 +231,86 @@ export function parseSlideXML(
 }
 
 /**
+ * Extract spTree XML fragment from slide XML
+ * Used to preserve element order before fast-xml-parser reorders elements by type
+ */
+function extractSpTreeXml(slideXml: string): string {
+  const match = slideXml.match(/<p:spTree[^>]*>[\s\S]*?<\/p:spTree>/);
+  return match ? match[0] : '';
+}
+
+/**
+ * Element tag to type mapping
+ */
+const TAG_TO_TYPE: Record<string, ElementType> = {
+  'p:sp': ElementType.SHAPE,
+  'p:pic': ElementType.IMAGE,
+  'p:cxnSp': ElementType.LINE,
+  'p:graphicFrame': ElementType.CHART,
+  'p:grpSp': ElementType.GROUP,
+};
+
+/**
+ * Extract element order from raw XML string
+ * Returns an array of { tag, index } representing the order elements appear in XML
+ *
+ * Example return: [{ tag: 'p:sp', index: 0 }, { tag: 'p:pic', index: 0 }, { tag: 'p:sp', index: 1 }]
+ */
+function extractElementOrder(spTreeXml: string): Array<{ tag: string; index: number }> {
+  const elementTags = Object.keys(TAG_TO_TYPE);
+  const order: Array<{ tag: string; index: number }> = [];
+  const counters: Record<string, number> = {};
+
+  // Regex matches opening tags (handles attributes)
+  const tagRegex = /<(p:sp|p:pic|p:cxnSp|p:graphicFrame|p:grpSp)(?:\s[^>]*)?>/g;
+  let match;
+
+  while ((match = tagRegex.exec(spTreeXml)) !== null) {
+    const tag = match[1];
+    counters[tag] = (counters[tag] || 0);
+    order.push({ tag, index: counters[tag] });
+    counters[tag]++;
+  }
+
+  return order;
+}
+
+/**
  * Parse shape tree to extract elements
+ *
+ * @param spTree - Parsed spTree object from fast-xml-parser
+ * @param spTreeXml - Raw XML string of spTree (used to preserve element order)
+ * @param options - Parser options
  */
 function parseShapeTree(
   spTree: any,
+  spTreeXml: string,
   options: ParserOptions
 ): ParsedElement[] {
   const elements: ParsedElement[] = [];
 
-  // Common PPTX shape elements
-  const shapeTypes = [
-    { tag: 'p:sp', type: ElementType.SHAPE },
-    { tag: 'p:pic', type: ElementType.IMAGE },
-    { tag: 'p:graphicFrame', type: ElementType.CHART }, // Charts and tables
-    { tag: 'p:cxnSp', type: ElementType.LINE }, // Connector/line
-    { tag: 'p:grpSp', type: ElementType.GROUP }, // Group
-  ];
+  // Extract element order from raw XML
+  const elementOrder = extractElementOrder(spTreeXml);
 
-  for (const { tag, type } of shapeTypes) {
-    const items = Array.isArray(spTree[tag]) ? spTree[tag] : [spTree[tag]];
-
-    for (const item of items) {
-      if (!item) continue;
-
-      const element = parseElement(item, type, options);
-      if (element) {
-        elements.push(element);
-      }
-    }
+  // Pre-process: convert each tag's elements to array for indexed access
+  const elementsByTag: Record<string, any[]> = {};
+  for (const tag of Object.keys(TAG_TO_TYPE)) {
+    const items = spTree[tag];
+    elementsByTag[tag] = Array.isArray(items) ? items : items ? [items] : [];
   }
 
-  // Sort by z-index (order in the document)
-  elements.forEach((el, idx) => {
-    el.zIndex = idx;
-  });
+  // Rebuild elements array in original XML order
+  for (const { tag, index } of elementOrder) {
+    const item = elementsByTag[tag]?.[index];
+    if (!item) continue;
+
+    const type = TAG_TO_TYPE[tag];
+    const element = parseElement(item, type, options);
+    if (element) {
+      element.zIndex = elements.length; // Set zIndex based on array position
+      elements.push(element);
+    }
+  }
 
   return elements;
 }
@@ -322,14 +370,15 @@ function extractBaseProperties(item: any): Partial<ParsedElement> {
  */
 function parseShape(item: any, baseProps: Partial<ParsedElement>): ParsedElement {
   const spPr = item['p:spPr'] || {};
+  const xfrm = spPr['a:xfrm'];  // 正确提取 xfrm (transform) 对象
 
   return {
     ...baseProps,
     id: baseProps.id || generateElementId(),
     type: ElementType.SHAPE,
     shapeType: determineShapeType(item),
-    position: parsePosition(spPr),
-    size: parseSize(spPr),
+    position: parsePosition(xfrm),   // 传入 xfrm 而非 spPr
+    size: parseSize(xfrm),           // 传入 xfrm 而非 spPr
     fill: parseFill(spPr),
     stroke: parseStroke(spPr),
     effects: parseEffects(spPr),
@@ -342,14 +391,16 @@ function parseShape(item: any, baseProps: Partial<ParsedElement>): ParsedElement
  */
 function parseImage(item: any, baseProps: Partial<ParsedElement>): ParsedElement {
   const spPr = item['p:spPr'] || {};
-  const blipFill = spPr['a:blipFill'];
+  const xfrm = spPr['a:xfrm'];  // 正确提取 xfrm (transform) 对象
+  // 图片的 blipFill 在 p:pic 元素下，不在 spPr 中
+  const blipFill = item['p:blipFill'] || spPr['a:blipFill'];
 
   return {
     ...baseProps,
     id: baseProps.id || generateElementId(),
     type: ElementType.IMAGE,
-    position: parsePosition(spPr),
-    size: parseSize(spPr),
+    position: parsePosition(xfrm),   // 传入 xfrm 而非 spPr
+    size: parseSize(xfrm),           // 传入 xfrm 而非 spPr
     imageRef: parseImageRef(blipFill),
     crop: parseCrop(blipFill),
     effects: parseEffects(spPr),
@@ -365,6 +416,8 @@ function parseChartOrTable(
 ): ParsedElement | null {
   const graphic = item['a:graphic'];
   const graphicData = graphic?.['a:graphicData'];
+  const spPr = item['p:xfrm'] || item['p:spPr'] || {};
+  const xfrm = spPr['a:xfrm'];
 
   if (!graphicData) {
     return null;
@@ -377,8 +430,8 @@ function parseChartOrTable(
       id: baseProps.id || generateElementId(),
       type: ElementType.CHART,
       chartRef: extractChartRef(item),
-      position: parsePosition(item['p:spPr']),
-      size: parseSize(item['p:spPr']),
+      position: parsePosition(xfrm),
+      size: parseSize(xfrm),
     };
   }
 
@@ -452,13 +505,16 @@ function parseTableStyle(tblPr: any): any {
 function parseLine(item: any, baseProps: Partial<ParsedElement>): ParsedElement {
   const spPr = item['p:spPr'] || {};
   const cxnSpPr = item['p:cxnSpPr'] || {};
+  const xfrm = spPr['a:xfrm'];  // 正确提取 xfrm (transform) 对象
 
   return {
     ...baseProps,
     id: baseProps.id || generateElementId(),
     type: ElementType.LINE,
-    startX: parsePoint(spPr['a:xfrm']?.['a:off'])?.x || 0,
-    startY: parsePoint(spPr['a:xfrm']?.['a:off'])?.y || 0,
+    position: parsePosition(xfrm),   // 传入 xfrm 而非 spPr
+    size: parseSize(xfrm),           // 传入 xfrm 而非 spPr
+    startX: parsePoint(xfrm?.['a:off'])?.x || 0,
+    startY: parsePoint(xfrm?.['a:off'])?.y || 0,
     endX: parsePoint(cxnSpPr['a:endPos'])?.x || 0,
     endY: parsePoint(cxnSpPr['a:endPos'])?.y || 0,
     stroke: parseStroke(spPr),
@@ -475,6 +531,8 @@ function parseGroup(
   options: ParserOptions
 ): ParsedElement {
   const elements: ParsedElement[] = [];
+  const spPr = item['p:spPr'] || {};
+  const xfrm = spPr['a:xfrm'];  // 正确提取 xfrm
 
   // Parse child elements
   for (const [tag, type] of [
@@ -498,7 +556,8 @@ function parseGroup(
     id: baseProps.id || generateElementId(),
     type: ElementType.GROUP,
     elements,
-    position: parsePosition(item['p:spPr']),
+    position: parsePosition(xfrm),
+    size: parseSize(xfrm),  // 添加 size 属性
   };
 }
 
@@ -514,10 +573,17 @@ function parseBackground(spTree: any): SlideBackground | undefined {
   const bgRef = bg['p:bgRef'];
 
   if (bgPr?.['a:solidFill']) {
-    return {
-      type: 'solid',
-      color: parseColor(bgPr['a:solidFill']),
-    };
+    const colorResult = parseColor(bgPr['a:solidFill']);
+    let colorStr: string | undefined;
+    if (typeof colorResult === 'object' && colorResult !== null) {
+      colorStr = colorResult.color;
+    } else if (typeof colorResult === 'string') {
+      colorStr = colorResult;
+    } else {
+      colorStr = undefined;
+    }
+    const result: SlideBackground = { type: 'solid', color: colorStr };
+    return result;
   }
 
   if (bgPr?.['a:gradFill']) {
@@ -586,15 +652,35 @@ function parsePoint(point: any): { x: number; y: number } | undefined {
 
 /**
  * Parse fill
+ * Handles solid fill, gradient fill, image fill, and noFill (transparent)
  */
 function parseFill(fill: any): any {
   if (!fill) return undefined;
 
+  // Handle noFill (transparent background)
+  if (fill['a:noFill']) {
+    return undefined;
+  }
+
   if (fill['a:solidFill']) {
-    return {
-      type: 'solid',
-      color: parseColor(fill['a:solidFill']),
-    };
+    const colorResult = parseColor(fill['a:solidFill']);
+    const result: any = { type: 'solid' };
+
+    if (typeof colorResult === 'object' && colorResult !== null) {
+      result.color = colorResult.color;
+      if (colorResult.opacity !== undefined) {
+        result.opacity = colorResult.opacity;
+      }
+    } else if (colorResult) {
+      result.color = colorResult;
+    } else {
+      return undefined; // No valid color
+    }
+
+    // Fully transparent should return undefined
+    if (result.opacity === 0) return undefined;
+
+    return result;
   }
 
   if (fill['a:gradFill']) {
@@ -615,25 +701,89 @@ function parseFill(fill: any): any {
 }
 
 /**
- * Parse color
+ * Parsed color result with optional opacity
  */
-function parseColor(colorFill: any): string {
+interface ParsedColorResult {
+  color: string;
+  opacity?: number;
+}
+
+/**
+ * Parse color with optional alpha transparency
+ *
+ * PPTX alpha values range from 0-100000, representing 0%-100% opacity.
+ * We convert this to a 0-1 range for web use.
+ */
+function parseColor(colorFill: any): string | ParsedColorResult {
   if (!colorFill) return '';
 
   const srgbClr = colorFill['a:srgbClr'];
   const scrgbClr = colorFill['a:scrgbClr'];
   const sysClr = colorFill['a:sysClr'];
+  const schemeClr = colorFill['a:schemeClr'];
 
-  if (srgbClr?.['val']) return srgbClr['val'];
-  if (scrgbClr) {
+  let color = '';
+  let opacity: number | undefined;
+
+  if (srgbClr?.['val']) {
+    // sRGB color
+    const val = srgbClr['val'];
+    color = val.startsWith('#') ? val : `#${val}`;
+    // Extract alpha (0-100000 → 0-1 opacity)
+    const alpha = srgbClr['a:alpha']?.['val'];
+    if (alpha !== undefined) {
+      opacity = 1 - (parseInt(alpha, 10) / 100000);
+    }
+  } else if (scrgbClr) {
+    // ScRGB color (RGB in percentage)
     const r = Math.round((parseInt(scrgbClr['r'], 10) / 100000) * 255);
     const g = Math.round((parseInt(scrgbClr['g'], 10) / 100000) * 255);
     const b = Math.round((parseInt(scrgbClr['b'], 10) / 100000) * 255);
-    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    const alpha = scrgbClr['a:alpha']?.['val'];
+    if (alpha !== undefined) {
+      opacity = 1 - (parseInt(alpha, 10) / 100000);
+    }
+  } else if (sysClr?.['lastClr']) {
+    // System color with last known value
+    const val = sysClr['lastClr'];
+    color = val.startsWith('#') ? val : `#${val}`;
+    const alpha = sysClr['a:alpha']?.['val'];
+    if (alpha !== undefined) {
+      opacity = 1 - (parseInt(alpha, 10) / 100000);
+    }
+  } else if (schemeClr?.['val']) {
+    // Scheme/theme color - use val as-is for now (should be resolved via theme)
+    // Common values: dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink
+    // For now, map common scheme colors to approximations
+    const schemeMap: Record<string, string> = {
+      dk1: '#000000',      // Dark 1 (usually black)
+      lt1: '#ffffff',      // Light 1 (usually white)
+      dk2: '#1f497d',      // Dark 2
+      lt2: '#eeece1',      // Light 2
+      accent1: '#4472c4',  // Accent 1
+      accent2: '#ed7d31',  // Accent 2
+      accent3: '#a5a5a5',  // Accent 3
+      accent4: '#ffc000',  // Accent 4
+      accent5: '#5b9bd5',  // Accent 5
+      accent6: '#70ad47',  // Accent 6
+      hlink: '#0563c1',    // Hyperlink
+      folHlink: '#954f72', // Followed hyperlink
+    };
+    const schemeVal = schemeClr['val'];
+    color = schemeMap[schemeVal] || '#000000';
+    const alpha = schemeClr['a:alpha']?.['val'];
+    if (alpha !== undefined) {
+      opacity = 1 - (parseInt(alpha, 10) / 100000);
+    }
   }
-  if (sysClr?.['lastClr']) return sysClr['lastClr'];
 
-  return '';
+  // Return object with opacity if transparency is present
+  if (opacity !== undefined && opacity < 1) {
+    return { color, opacity };
+  }
+
+  return color;
 }
 
 /**
@@ -648,7 +798,14 @@ function parseGradientColors(gradFill: any): string[] {
   const stops = Array.isArray(gsLst) ? gsLst : [gsLst];
 
   for (const stop of stops) {
-    const color = parseColor(stop);
+    const colorResult = parseColor(stop);
+    // Extract color string from result (handle both string and object return)
+    let color: string | undefined;
+    if (typeof colorResult === 'object' && colorResult !== null) {
+      color = colorResult.color;
+    } else if (typeof colorResult === 'string') {
+      color = colorResult;
+    }
     if (color) colors.push(color);
   }
 
@@ -663,9 +820,14 @@ function parseStroke(spPr: any): any {
 
   if (!ln) return undefined;
 
+  const colorResult = parseColor(ln['a:solidFill']);
+  const color = typeof colorResult === 'object' && colorResult !== null
+    ? colorResult.color
+    : colorResult;
+
   return {
     width: ln['w'] ? parseInt(ln['w'], 10) / 12700 : 1, // EMU to points
-    color: parseColor(ln['a:solidFill']),
+    color,
     dashType: ln['a:prstDash']?.['val'],
     lineCap: ln['a:cap']?.['val'],
     lineJoin: ln['a:join']?.['a:round']?.['lim'],
@@ -694,9 +856,14 @@ function parseEffects(spPr: any): any {
 function parseShadow(shadow: any): any {
   if (!shadow) return undefined;
 
+  const colorResult = parseColor(shadow);
+  const color = typeof colorResult === 'object' && colorResult !== null
+    ? colorResult.color
+    : colorResult;
+
   return {
     type: shadow === 'a:outerShdw' ? 'outer' : 'inner',
-    color: parseColor(shadow),
+    color,
     blur: shadow['blurRad'] ? parseInt(shadow['blurRad'], 10) / 12700 : undefined,
     offset: shadow['dist'] ? parseInt(shadow['dist'], 10) / 12700 : undefined,
     angle: shadow['dir'] ? parseInt(shadow['dir'], 10) / 60000 : undefined,
@@ -710,8 +877,13 @@ function parseShadow(shadow: any): any {
 function parseGlow(glow: any): any {
   if (!glow) return undefined;
 
+  const colorResult = parseColor(glow);
+  const color = typeof colorResult === 'object' && colorResult !== null
+    ? colorResult.color
+    : colorResult;
+
   return {
-    color: parseColor(glow),
+    color,
     radius: glow['rad'] ? parseInt(glow['rad'], 10) / 12700 : undefined,
   };
 }
@@ -758,6 +930,12 @@ function parseTextRun(r: any): any {
   const textNode = r['a:t'];
   const text = typeof textNode === 'string' ? textNode : (textNode?.['#text'] || '');
 
+  // Parse color with opacity support
+  const colorResult = parseColor(rPr?.['a:solidFill']);
+  const color = typeof colorResult === 'object' && colorResult !== null
+    ? colorResult.color
+    : colorResult;
+
   return {
     text,
     font: rPr?.['a:latin']?.['typeface'] || rPr?.['a:cs']?.['typeface'],
@@ -765,7 +943,7 @@ function parseTextRun(r: any): any {
     bold: rPr?.['b'] === '1' || rPr?.['b'] === true,
     italic: rPr?.['i'] === '1' || rPr?.['i'] === true,
     underline: rPr?.['u'] === '1' || rPr?.['u'] === true,
-    color: parseColor(rPr?.['a:solidFill']),
+    color,
   };
 }
 
@@ -890,9 +1068,14 @@ export function parseAllSlides(
 ): ParsedSlide[] {
   const slides: ParsedSlide[] = [];
 
+  // Build relationship map for media resolution
+  const relationshipMap = buildRelationshipMap(extracted);
+
   for (const [index, xml] of extracted.slides.entries()) {
     try {
       const slide = parseSlideXML(xml, index + 1, options);
+      // Attach relationship map to each slide for media resolution
+      (slide as any)._relationshipMap = relationshipMap.get(index);
       slides.push(slide);
     } catch (error) {
       logger.error(`Failed to parse slide ${index + 1}`, {
@@ -908,4 +1091,56 @@ export function parseAllSlides(
   });
 
   return slides;
+}
+
+/**
+ * Build relationship map from extracted PPTX relationships
+ * Maps rId (e.g., "rId1") to target file path (e.g., "../media/image1.png")
+ */
+function buildRelationshipMap(extracted: ExtractedPPTX): Map<number, Map<string, string>> {
+  const parser = createXMLParser({});
+  const slideRelationships = new Map<number, Map<string, string>>();
+
+  for (const [slideIndex, relXml] of extracted.relationships.entries()) {
+    const relMap = new Map<string, string>();
+
+    try {
+      const parsed = parser.parse(relXml);
+      const relationships = parsed['Relationships']?.['Relationship'] || [];
+
+      const rels = Array.isArray(relationships) ? relationships : [relationships];
+
+      for (const rel of rels) {
+        if (rel && rel['Id'] && rel['Target']) {
+          relMap.set(rel['Id'], rel['Target']);
+        }
+      }
+
+      slideRelationships.set(slideIndex, relMap);
+    } catch (error) {
+      logger.warn(`Failed to parse relationships for slide ${slideIndex}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return slideRelationships;
+}
+
+/**
+ * Resolve media reference from relationship ID to actual filename
+ *
+ * @param relId - Relationship ID (e.g., "rId1")
+ * @param relationshipMap - Map of rId to target path
+ * @returns Media filename or undefined
+ */
+export function resolveMediaFilename(relId: string, relationshipMap?: Map<string, string>): string | undefined {
+  if (!relId || !relationshipMap) return undefined;
+
+  const target = relationshipMap.get(relId);
+  if (!target) return undefined;
+
+  // Extract filename from target path (e.g., "../media/image1.png" -> "image1.png")
+  const parts = target.split('/');
+  return parts[parts.length - 1];
 }

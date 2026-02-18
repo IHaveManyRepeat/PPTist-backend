@@ -8,7 +8,9 @@
  */
 
 import { promises as fs } from 'fs';
-import { unzipPPTX } from '../pptx/unzip';
+import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
+import { unzipPPTX, type ExtractedPPTX } from '../pptx/unzip';
 import { extractMediaFiles } from '../pptx/extract-media';
 import { validatePPTXFile } from '../pptx/validator';
 import { ConversionOrchestrator } from './orchestrator.js';
@@ -168,10 +170,13 @@ export class ConversionService {
         });
       }
 
-      // Step 4: Create conversion context
-      const context = this.createConversionContext(mediaFiles, targetVersion);
+      // Step 4: Build relationship map for media resolution
+      const relationshipMap = this.buildRelationshipMap(extracted);
 
-      // Step 5: Convert slides
+      // Step 5: Create conversion context with relationship support
+      const context = this.createConversionContext(mediaFiles, relationshipMap, targetVersion);
+
+      // Step 6: Convert slides
       onProgress?.(50, 'Converting slides...');
       const orchestrator = new ConversionOrchestrator({
         includeAnimations,
@@ -183,18 +188,18 @@ export class ConversionService {
 
       const presentation = await orchestrator.convert(extracted, context);
 
-      // Step 6: Collect metadata
+      // Step 7: Collect metadata
       onProgress?.(80, 'Collecting metadata...');
       const metadata = collectMetadata(presentation, extracted, filename, startTime);
 
-      // Step 7: Collect warnings
+      // Step 8: Collect warnings
       const warnings = collectWarnings(extracted, validationResult.warnings as any);
 
-      // Step 8: Serialize result
+      // Step 9: Serialize result
       onProgress?.(90, 'Serializing result...');
       const jsonResult = serializeResult(presentation, metadata, warnings);
 
-      // Step 9: Save result to file
+      // Step 10: Save result to file
       await this.saveResult(jsonResult, taskId, outputDir);
 
       onProgress?.(100, 'Conversion completed successfully');
@@ -228,24 +233,98 @@ export class ConversionService {
   }
 
   /**
-   * Create conversion context
+   * Build relationship map from extracted PPTX relationships
+   * Maps slideIndex -> rId -> target filename
+   */
+  private buildRelationshipMap(extracted: ExtractedPPTX): Map<number, Map<string, string>> {
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '',
+    });
+
+    const slideRelationships = new Map<number, Map<string, string>>();
+
+    for (const [slideIndex, relXml] of extracted.relationships.entries()) {
+      const relMap = new Map<string, string>();
+
+      try {
+        const parsed = parser.parse(relXml);
+        const relationships = parsed['Relationships']?.['Relationship'] || [];
+        const rels = Array.isArray(relationships) ? relationships : [relationships];
+
+        for (const rel of rels) {
+          if (rel && rel['Id'] && rel['Target']) {
+            // Extract filename from target path (e.g., "../media/image1.png" -> "image1.png")
+            const target = rel['Target'];
+            const filename = path.basename(target);
+            relMap.set(rel['Id'], filename);
+          }
+        }
+
+        slideRelationships.set(slideIndex, relMap);
+      } catch (error) {
+        logger.warn(`Failed to parse relationships for slide ${slideIndex}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    logger.debug('Built relationship map', {
+      slideCount: slideRelationships.size,
+    });
+
+    return slideRelationships;
+  }
+
+  /**
+   * Create conversion context with relationship-based media resolution
    */
   private createConversionContext(
     mediaFiles: Map<string, any>,
+    relationshipMap: Map<number, Map<string, string>>,
     targetVersion: string
   ): ConversionContext {
     return {
       version: targetVersion,
       basePath: '',
       mediaFiles: new Map(),
+      // Track current slide index for media resolution
+      _currentSlideIndex: 1,
+      _relationshipMap: relationshipMap,
       resolveMediaReference: (ref: string) => {
-        return mediaFiles.get(ref) || null;
+        // ref is a relationship ID like "rId1"
+        // First, try to resolve using the relationship map
+        const currentSlideIndex = (this as any)._currentSlideIndex || 1;
+        const slideRelMap = relationshipMap.get(currentSlideIndex);
+
+        if (slideRelMap) {
+          const filename = slideRelMap.get(ref);
+          if (filename && mediaFiles.has(filename)) {
+            return mediaFiles.get(filename);
+          }
+        }
+
+        // Fallback: try direct lookup by ref (in case ref is already a filename)
+        if (mediaFiles.has(ref)) {
+          return mediaFiles.get(ref);
+        }
+
+        // Second fallback: try all slides' relationships
+        for (const [, relMap] of relationshipMap.entries()) {
+          const filename = relMap.get(ref);
+          if (filename && mediaFiles.has(filename)) {
+            return mediaFiles.get(filename);
+          }
+        }
+
+        logger.warn('Failed to resolve media reference', { ref });
+        return null;
       },
       slideSize: {
         width: 1280,
         height: 720,
       },
-    };
+    } as ConversionContext;
   }
 
   /**

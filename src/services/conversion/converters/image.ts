@@ -11,6 +11,8 @@ import { BaseElementConverter } from '../base-converter';
 import { ElementType, type ConversionContext } from '../../../types/converters';
 import type { ImageElement } from '../../../types/pptist';
 import type { ParsedElement } from '../../../services/pptx/parser';
+import { emuToPixels } from '../../../utils/coordinates';
+import { normalizeColor } from '../../../utils/color';
 import { generateTrackedId, ID_PREFIXES } from '../../../utils/id-generator';
 import { logger } from '../../../utils/logger';
 
@@ -38,16 +40,23 @@ export class ImageConverter extends BaseElementConverter<ParsedElement, ImageEle
       imageRef: element.imageRef,
     });
 
+    // Convert EMU to pixels (apply 96/72 scaling)
+    const x = emuToPixels(element.position?.x || 0);
+    const y = emuToPixels(element.position?.y || 0);
+    const width = emuToPixels(element.size?.width || 914400); // Default 1 inch
+    const height = emuToPixels(element.size?.height || 914400); // Default 1 inch
+
     const pptistElement: ImageElement = {
       id: generateTrackedId(ID_PREFIXES.IMAGE, undefined, element.id),
       type: 'image',
-      x: element.position?.x || 0,
-      y: element.position?.y || 0,
-      width: element.size?.width || 100,
-      height: element.size?.height || 100,
+      x,
+      y,
+      width,
+      height,
       rotate: element.rotation || 0,
       locked: element.locked || false,
       visible: !element.hidden,
+      zIndex: element.zIndex,
       src: this.resolveImageSource(element, context),
       flip: undefined,
     };
@@ -153,7 +162,7 @@ export class ImageConverter extends BaseElementConverter<ParsedElement, ImageEle
   private convertShadow(shadow: any): any {
     const pptistShadow: any = {};
 
-    if (shadow.color) pptistShadow.color = shadow.color;
+    if (shadow.color) pptistShadow.color = normalizeColor(shadow.color);
     if (shadow.offset !== undefined) pptistShadow.offset = shadow.offset;
     if (shadow.blur !== undefined) pptistShadow.blur = shadow.blur;
     if (shadow.angle !== undefined) pptistShadow.angle = shadow.angle;
@@ -183,7 +192,7 @@ export class ImageConverter extends BaseElementConverter<ParsedElement, ImageEle
   private convertGlow(glow: any): any {
     const pptistGlow: any = {};
 
-    if (glow.color) pptistGlow.color = glow.color;
+    if (glow.color) pptistGlow.color = normalizeColor(glow.color);
     if (glow.radius !== undefined) pptistGlow.radius = glow.radius;
 
     return pptistGlow;
@@ -209,7 +218,7 @@ export class ImageConverter extends BaseElementConverter<ParsedElement, ImageEle
     if (fill.type === 'solid' && fill.color) {
       return {
         type: 'solid',
-        color: fill.color,
+        color: normalizeColor(fill.color),
       };
     }
 
@@ -225,7 +234,7 @@ export class ImageConverter extends BaseElementConverter<ParsedElement, ImageEle
     const pptistStroke: any = {};
 
     if (stroke.width !== undefined) pptistStroke.width = stroke.width;
-    if (stroke.color) pptistStroke.color = stroke.color;
+    if (stroke.color) pptistStroke.color = normalizeColor(stroke.color);
     if (stroke.dashType) pptistStroke.style = stroke.dashType;
 
     return pptistStroke;

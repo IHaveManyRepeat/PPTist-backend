@@ -634,3 +634,15 @@ export function isLightColor(color: string): boolean {
   const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
   return luminance > 0.5;
 }
+
+/**
+ * Normalize color string to ensure # prefix
+ *
+ * @param color - Color string (hex without or with #)
+ * @returns Normalized color string with # prefix
+ */
+export function normalizeColor(color: string | undefined | null): string {
+  if (!color) return '#000000';
+  if (color.startsWith('#')) return color;
+  return `#${color}`;
+}

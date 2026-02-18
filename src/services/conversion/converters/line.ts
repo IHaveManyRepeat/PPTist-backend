@@ -11,6 +11,8 @@ import { BaseElementConverter } from '../base-converter';
 import { ElementType, type ConversionContext } from '../../../types/converters';
 import type { LineElement } from '../../../types/pptist';
 import type { ParsedElement } from '../../../services/pptx/parser';
+import { emuToPixels } from '../../../utils/coordinates';
+import { normalizeColor } from '../../../utils/color';
 import { generateTrackedId, ID_PREFIXES } from '../../../utils/id-generator';
 import { logger } from '../../../utils/logger';
 
@@ -41,16 +43,42 @@ export class LineConverter extends BaseElementConverter<ParsedElement, LineEleme
       endY: element.endY,
     });
 
+    // Convert EMU coordinates to pixels
+    const startXPx = emuToPixels(element.startX || 0);
+    const startYPx = emuToPixels(element.startY || 0);
+    const endXPx = emuToPixels(element.endX || 914400); // Default 1 inch
+    const endYPx = emuToPixels(element.endY || 0);
+
+    // Calculate bounding box
+    const left = Math.min(startXPx, endXPx);
+    const top = Math.min(startYPx, endYPx);
+    const width = Math.abs(endXPx - startXPx);
+    const height = Math.abs(endYPx - startYPx);
+
+    // Calculate relative start/end positions (relative to bounding box)
+    const relativeStartX = startXPx - left;
+    const relativeStartY = startYPx - top;
+    const relativeEndX = endXPx - left;
+    const relativeEndY = endYPx - top;
+
     const pptistElement: LineElement = {
       id: generateTrackedId(ID_PREFIXES.LINE, undefined, element.id),
       type: 'line',
-      startX: element.startX || 0,
-      startY: element.startY || 0,
-      endX: element.endX || 100,
-      endY: element.endY || 100,
-      width: element.stroke?.width || 1,
-      color: element.stroke?.color || '#000000',
+      // Position and size (bounding box)
+      x: left,
+      y: top,
+      width: width || 1, // Minimum 1px for zero-length lines
+      height: height || 1,
+      // Layer order
+      zIndex: element.zIndex,
+      // Line-specific properties
+      startX: startXPx,
+      startY: startYPx,
+      endX: endXPx,
+      endY: endYPx,
+      // Line styling
       style: this.convertLineStyle(element.style),
+      color: normalizeColor(element.stroke?.color) || '#000000',
     };
 
     // Convert stroke properties
@@ -91,11 +119,13 @@ export class LineConverter extends BaseElementConverter<ParsedElement, LineEleme
    */
   private convertStroke(stroke: any, pptistElement: LineElement): void {
     if (stroke.width !== undefined) {
+      // Line width is typically in EMU, convert to points then pixels
+      // But stroke.width from parser is already in points (see parseStroke in parser.ts)
       pptistElement.width = stroke.width;
     }
 
     if (stroke.color) {
-      pptistElement.color = stroke.color;
+      pptistElement.color = normalizeColor(stroke.color);
     }
 
     if (stroke.lineCap) {
@@ -135,7 +165,7 @@ export class LineConverter extends BaseElementConverter<ParsedElement, LineEleme
   private convertShadow(shadow: any): any {
     const pptistShadow: any = {};
 
-    if (shadow.color) pptistShadow.color = shadow.color;
+    if (shadow.color) pptistShadow.color = normalizeColor(shadow.color);
     if (shadow.offset !== undefined) pptistShadow.offset = shadow.offset;
     if (shadow.blur !== undefined) pptistShadow.blur = shadow.blur;
     if (shadow.angle !== undefined) pptistShadow.angle = shadow.angle;
@@ -150,7 +180,7 @@ export class LineConverter extends BaseElementConverter<ParsedElement, LineEleme
   private convertGlow(glow: any): any {
     const pptistGlow: any = {};
 
-    if (glow.color) pptistGlow.color = glow.color;
+    if (glow.color) pptistGlow.color = normalizeColor(glow.color);
     if (glow.radius !== undefined) pptistGlow.radius = glow.radius;
 
     return pptistGlow;

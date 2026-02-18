@@ -88,12 +88,12 @@ export interface UnzipOptions {
 /**
  * Default unzip options
  */
-const DEFAULT_OPTIONS: Required<Omit<UnzipOptions, 'ignoreEncryption'>> = {
+const DEFAULT_OPTIONS: Required<UnzipOptions> = {
   extractMedia: true,
   extractThemes: true,
   extractMasters: true,
   maxFileSize: 100 * 1024 * 1024, // 100MB
-  // ignoreEncryption 默认为 false
+  ignoreEncryption: false,
 };
 
 /**

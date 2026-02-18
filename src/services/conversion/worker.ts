@@ -225,7 +225,13 @@ export class ConversionWorker {
     };
 
     // Process the task
-    await this.processTask(task);
+    const success = await this.processTask(task);
+
+    // If task failed, throw an error so the queue correctly marks it as FAILED
+    // This prevents the race condition where queue overwrites FAILED status with COMPLETED
+    if (!success) {
+      throw new Error(task.error || 'Conversion failed');
+    }
 
     // Return the result
     return task.result;
@@ -233,8 +239,9 @@ export class ConversionWorker {
 
   /**
    * Process single task
+   * @returns true if task completed successfully, false otherwise
    */
-  private async processTask(task: Task): Promise<void> {
+  private async processTask(task: Task): Promise<boolean> {
     logger.info('Processing conversion task', {
       workerId: this.workerId,
       taskId: task.id,
@@ -348,6 +355,8 @@ export class ConversionWorker {
           workerId: this.workerId,
           taskId: task.id,
         });
+
+        return true;
       } else {
         // Task failed
         await this.conversionLogger.addError(
@@ -369,6 +378,10 @@ export class ConversionWorker {
           taskId: task.id,
           error: result.error,
         });
+
+        // Set error for handler to throw
+        task.error = result.error || 'Unknown error';
+        return false;
       }
 
       // Clean up uploaded file
@@ -395,8 +408,13 @@ export class ConversionWorker {
         stack: error instanceof Error ? error.stack : undefined,
       });
 
+      // Set error for handler to throw
+      task.error = errorMessage;
+
       // Clean up uploaded file
       await this.cleanupUploadedFile((task.data as any).filePath);
+
+      return false;
     } finally {
       // Unregister conversion with memory monitor
       this.memoryMonitor.registerConversionComplete();
