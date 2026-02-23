@@ -22,6 +22,7 @@ import type {
 } from '../context/parsing-context.js'
 import { createDefaultParsingContext, createEmptyIndexTables } from '../context/parsing-context.js'
 import { getTextByPathList, resolveSolidFill, resolveSolidFillWithAlpha } from '../resolvers/color-resolver.js'
+import { resolveSlideBackgroundFill, type FillStyle } from '../resolvers/fill-resolver.js'
 import { parseTable } from '../parsers/table-parser.js'
 import { parseChart } from '../parsers/chart-parser.js'
 import { generateShapePath } from '../generators/svg-path-generator.js'
@@ -638,6 +639,34 @@ function parseConnector(
 }
 
 /**
+ * 将 FillStyle 转换为 PPTXSlide.background 格式
+ */
+function convertFillToBackground(fill: FillStyle): PPTXSlide['background'] {
+  switch (fill.type) {
+    case 'solid':
+      return { type: 'solid', color: fill.color }
+    case 'image':
+      return { type: 'image', imageRId: fill.src }
+    case 'gradient':
+      return {
+        type: 'gradient',
+        gradient: {
+          type: fill.gradientType === 'linear' ? 'linear' : 'radial',
+          colors: fill.colors.map(c => ({
+            pos: parseInt(c.pos) / 100,
+            color: c.color,
+          })),
+          angle: fill.angle,
+        },
+      }
+    case 'none':
+    case 'pattern':
+    default:
+      return undefined
+  }
+}
+
+/**
  * 解析单张幻灯片
  * 按原始顺序遍历 spTree 的所有子元素，保持 PPTX 中定义的 z-order
  */
@@ -692,9 +721,14 @@ async function parseSingleSlide(
     }
   }
 
+  // 解析幻灯片背景
+  const backgroundFill = await resolveSlideBackgroundFill(context)
+  const background = convertFillToBackground(backgroundFill)
+
   return {
     id: `slide-${slideIndex}`,
     elements,
+    background,
   }
 }
 
