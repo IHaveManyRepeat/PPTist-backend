@@ -1,9 +1,16 @@
 import type { Slide } from '../types/pptist.js'
 import type { ConversionContext } from '../../../types/index.js'
 import { convertElement } from '../converters/index.js'
+import { getLogger } from '../../../utils/logger.js'
+import { createErrorHandler } from '../../../utils/error-handler.js'
 
 /**
  * Convert a single PPTX slide to PPTist slide
+ *
+ * @param pptxSlide - PPTX slide data containing elements and metadata
+ * @param slideIndex - Zero-based index of the slide
+ * @param context - Conversion context with media map and warnings
+ * @returns Converted PPTist slide
  */
 export function convertSlide(
   pptxSlide: { id: string; elements: any[]; background?: any; notes?: string },
@@ -11,6 +18,8 @@ export function convertSlide(
   context: ConversionContext
 ): Slide {
   const elements: any[] = []
+  const logger = getLogger()
+  const errorHandler = createErrorHandler(context.requestId, logger)
 
   for (const pptxElement of pptxSlide.elements) {
     try {
@@ -26,8 +35,17 @@ export function convertSlide(
         elements.push(converted)
       }
     } catch (error) {
-      console.error(`Error converting element ${pptxElement.id}:`, error)
+      // 使用统一错误处理器记录错误
+      errorHandler.handleElementError(pptxElement, error, {
+        operation: 'conversion',
+        slideIndex,
+      })
     }
+  }
+
+  // 将警告合并到上下文中
+  if (errorHandler.hasWarnings()) {
+    context.warnings.push(...errorHandler.getWarnings())
   }
 
   const slide: Slide = {

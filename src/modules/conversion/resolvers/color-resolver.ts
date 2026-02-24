@@ -1,7 +1,25 @@
 /**
  * 颜色解析器
- * 参考 pptxtojson 的 color.js 和 schemeColor.js 实现
- * 支持所有 PPTX 颜色类型和修饰符
+ *
+ * @module modules/conversion/resolvers/color-resolver
+ * @description 解析 PPTX 中的各种颜色格式并转换为十六进制颜色值。
+ * 支持所有 PPTX 颜色类型：RGB、主题色、系统色、预设色、HSL 等。
+ *
+ * 参考：
+ * - pptxtojson 的 color.js 和 schemeColor.js 实现
+ * - ECMA-376 Office Open XML 标准
+ *
+ * @example
+ * ```typescript
+ * import { resolveSolidFill, resolveSolidFillWithAlpha } from './color-resolver.js';
+ *
+ * // 解析纯色填充
+ * const color = resolveSolidFill({ 'a:srgbClr': { attrs: { val: 'FF0000' } } }, context);
+ * // 返回: '#FF0000'
+ *
+ * // 解析带透明度的颜色
+ * const { color, alpha } = resolveSolidFillWithAlpha(solidFillNode, context);
+ * ```
  */
 
 import tinycolor from 'tinycolor2'
@@ -9,6 +27,12 @@ import type { XmlObject, ParsingContext, ColorMapOverride } from '../context/par
 
 /**
  * 预设颜色名称到十六进制的映射
+ *
+ * @description
+ * 包含所有 CSS 预设颜色名称及其对应的十六进制值。
+ * 用于解析 PPTX 中的 prstClr（预设颜色）节点。
+ *
+ * @see {@link https://www.w3.org/TR/css-color-3/#svg-color CSS Color Module Level 3}
  */
 const PRESET_COLORS: Record<string, string> = {
   white: 'FFFFFF',
@@ -162,7 +186,20 @@ const PRESET_COLORS: Record<string, string> = {
 }
 
 /**
- * 获取路径列表中的值
+ * 从嵌套对象中按路径获取值
+ *
+ * @description
+ * 工具函数，用于从深层嵌套的 XML 对象中安全地提取值。
+ * 如果路径中的任何节点不存在，返回 undefined。
+ *
+ * @param obj - 起始对象
+ * @param pathList - 属性路径数组，如 ['a:b', 'a:c', 'attrs', 'val']
+ * @returns 路径终点处的值，如果路径不存在则返回 undefined
+ *
+ * @example
+ * ```typescript
+ * const value = getTextByPathList(xmlObj, ['p:sld', 'p:cSld', 'p:spTree']);
+ * ```
  */
 export function getTextByPathList(obj: XmlObject | undefined, pathList: string[]): string | XmlObject | undefined {
   if (!obj) return undefined
@@ -362,16 +399,36 @@ export function getSchemeColorFromTheme(
 }
 
 /**
- * 解析纯色填充节点，返回十六进制颜色
+ * 颜色解析结果接口
+ * @internal
  */
-export function resolveSolidFill(
-  solidFill: XmlObject | undefined,
+interface ColorParseResult {
+  /** 十六进制颜色值（不带 # 前缀） */
+  color: string
+  /** 颜色节点（用于后续修饰符处理） */
+  clrNode: XmlObject | undefined
+}
+
+/**
+ * 解析 solidFill 中的基础颜色值（内部函数）
+ *
+ * @description
+ * 提取 solidFill 节点中的基础颜色值，不应用任何修饰符。
+ * 这是 resolveSolidFill 和 resolveSolidFillWithAlpha 的共享实现。
+ *
+ * @param solidFill - solidFill XML 节点
+ * @param context - 解析上下文
+ * @param clrMap - 可选的颜色映射覆盖
+ * @param phClr - 可选的占位符颜色
+ * @returns 颜色解析结果
+ * @internal
+ */
+function parseBaseColor(
+  solidFill: XmlObject,
   context: ParsingContext,
   clrMap?: ColorMapOverride,
   phClr?: string
-): string {
-  if (!solidFill) return ''
-
+): ColorParseResult {
   let color = ''
   let clrNode: XmlObject | undefined
 
@@ -389,7 +446,7 @@ export function resolveSolidFill(
   // scrgbClr: RGB 百分比
   else if (solidFill['a:scrgbClr']) {
     clrNode = solidFill['a:scrgbClr']
-    const attrs = clrNode!['attrs'] || {}
+    const attrs = clrNode['attrs'] || {}
     const r = parseFloat((attrs['r'] || '0').toString().replace('%', '')) / 100
     const g = parseFloat((attrs['g'] || '0').toString().replace('%', '')) / 100
     const b = parseFloat((attrs['b'] || '0').toString().replace('%', '')) / 100
@@ -404,7 +461,7 @@ export function resolveSolidFill(
   // hslClr: HSL 颜色
   else if (solidFill['a:hslClr']) {
     clrNode = solidFill['a:hslClr']
-    const attrs = clrNode!['attrs'] || {}
+    const attrs = clrNode['attrs'] || {}
     const hue = parseFloat(attrs['hue'] || '0') / 100000
     const sat = parseFloat((attrs['sat'] || '0').toString().replace('%', '')) / 100
     const lum = parseFloat((attrs['lum'] || '0').toString().replace('%', '')) / 100
@@ -418,73 +475,172 @@ export function resolveSolidFill(
     if (sysClr) color = sysClr
   }
 
+  return { color, clrNode }
+}
+
+/**
+ * 应用颜色修饰符（内部函数）
+ *
+ * @description
+ * 应用 PPTX 颜色修饰符（如 alpha、tint、shade 等）。
+ * 根据 mergeAlpha 参数决定是否将 alpha 合并到颜色值中。
+ *
+ * @param color - 基础颜色值（不带 # 前缀）
+ * @param clrNode - 颜色节点（包含修饰符）
+ * @param mergeAlpha - 是否将 alpha 合并到颜色值中
+ * @returns 处理后的颜色值和可选的 alpha 值
+ * @internal
+ */
+function applyColorModifiers(
+  color: string,
+  clrNode: XmlObject,
+  mergeAlpha: boolean
+): { color: string; alpha?: number } {
+  let resultColor = color
+  let alpha: number | undefined
+  let hasAlpha = false
+
+  // alpha: 透明度
+  const alphaValue = parseInt(getTextByPathList(clrNode, ['a:alpha', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(alphaValue)) {
+    if (mergeAlpha) {
+      // 将 alpha 合并到颜色值中
+      const alColor = tinycolor(resultColor)
+      alColor.setAlpha(alphaValue)
+      resultColor = alColor.toHex8()
+      hasAlpha = true
+    } else {
+      // 保留 alpha 作为单独的返回值
+      alpha = alphaValue
+    }
+  }
+
+  // hueMod: 色调调制
+  const hueMod = parseInt(getTextByPathList(clrNode, ['a:hueMod', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(hueMod)) {
+    resultColor = applyHueMod(resultColor, hueMod, hasAlpha)
+  }
+
+  // lumMod: 亮度调制
+  const lumMod = parseInt(getTextByPathList(clrNode, ['a:lumMod', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(lumMod)) {
+    resultColor = applyLumMod(resultColor, lumMod, hasAlpha)
+  }
+
+  // lumOff: 亮度偏移
+  const lumOff = parseInt(getTextByPathList(clrNode, ['a:lumOff', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(lumOff)) {
+    resultColor = applyLumOff(resultColor, lumOff, hasAlpha)
+  }
+
+  // satMod: 饱和度调制
+  const satMod = parseInt(getTextByPathList(clrNode, ['a:satMod', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(satMod)) {
+    resultColor = applySatMod(resultColor, satMod, hasAlpha)
+  }
+
+  // shade: 阴影
+  const shade = parseInt(getTextByPathList(clrNode, ['a:shade', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(shade)) {
+    resultColor = applyShade(resultColor, shade, hasAlpha)
+  }
+
+  // tint: 色调
+  const tint = parseInt(getTextByPathList(clrNode, ['a:tint', 'attrs', 'val']) as string || '') / 100000
+  if (!isNaN(tint)) {
+    resultColor = applyTint(resultColor, tint, hasAlpha)
+  }
+
+  return { color: resultColor, alpha }
+}
+
+/**
+ * 解析纯色填充节点，返回十六进制颜色
+ *
+ * @description
+ * 支持解析的颜色类型：
+ * - **srgbClr**: RGB 颜色（如 'FF0000'）
+ * - **schemeClr**: 主题颜色（如 'accent1', 'dk1'）
+ * - **scrgbClr**: RGB 百分比（r/g/b 属性）
+ * - **prstClr**: 预设颜色名称（如 'red', 'blue'）
+ * - **hslClr**: HSL 颜色
+ * - **sysClr**: 系统颜色
+ *
+ * 支持的颜色修饰符：
+ * - **alpha**: 透明度 (0-100000 映射到 0-1)
+ * - **hueMod**: 色调调制
+ * - **lumMod**: 亮度调制
+ * - **lumOff**: 亮度偏移
+ * - **satMod**: 饱和度调制
+ * - **shade**: 阴影效果
+ * - **tint**: 色调效果
+ *
+ * @param solidFill - solidFill XML 节点
+ * @param context - 解析上下文，包含主题信息
+ * @param clrMap - 可选的颜色映射覆盖
+ * @param phClr - 可选的占位符颜色
+ * @returns 十六进制颜色字符串（带 # 前缀），如果解析失败返回空字符串
+ *
+ * @example
+ * ```typescript
+ * // RGB 颜色
+ * resolveSolidFill({ 'a:srgbClr': { attrs: { val: 'FF0000' } } }, context);
+ * // 返回: '#FF0000'
+ *
+ * // 主题颜色
+ * resolveSolidFill({ 'a:schemeClr': { attrs: { val: 'accent1' } } }, context);
+ * // 返回: '#4472C4' (取决于主题)
+ *
+ * // 带透明度的颜色
+ * resolveSolidFill({
+ *   'a:srgbClr': {
+ *     attrs: { val: 'FF0000' },
+ *     'a:alpha': { attrs: { val: '50000' } } // 50%
+ *   }
+ * }, context);
+ * // 返回: '#FF000080' (8位hex)
+ * ```
+ */
+export function resolveSolidFill(
+  solidFill: XmlObject | undefined,
+  context: ParsingContext,
+  clrMap?: ColorMapOverride,
+  phClr?: string
+): string {
+  if (!solidFill) return ''
+
+  // 解析基础颜色
+  const { color, clrNode } = parseBaseColor(solidFill, context, clrMap, phClr)
+
   // 如果没有颜色节点，但有 fillRef（样式引用）
   if (!color && solidFill['a:fillRef']) {
     return resolveSolidFill(solidFill['a:fillRef'], context, clrMap, phClr)
   }
 
-  // 应用颜色修饰符
+  // 应用颜色修饰符（将 alpha 合并到颜色值中）
+  let resultColor = color
   if (clrNode && color) {
-    let hasAlpha = false
-
-    // alpha: 透明度
-    const alpha = parseInt(getTextByPathList(clrNode, ['a:alpha', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(alpha)) {
-      const alColor = tinycolor(color)
-      alColor.setAlpha(alpha)
-      color = alColor.toHex8()
-      hasAlpha = true
-    }
-
-    // hueMod: 色调调制
-    const hueMod = parseInt(getTextByPathList(clrNode, ['a:hueMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(hueMod)) {
-      color = applyHueMod(color, hueMod, hasAlpha)
-    }
-
-    // lumMod: 亮度调制
-    const lumMod = parseInt(getTextByPathList(clrNode, ['a:lumMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(lumMod)) {
-      color = applyLumMod(color, lumMod, hasAlpha)
-    }
-
-    // lumOff: 亮度偏移
-    const lumOff = parseInt(getTextByPathList(clrNode, ['a:lumOff', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(lumOff)) {
-      color = applyLumOff(color, lumOff, hasAlpha)
-    }
-
-    // satMod: 饱和度调制
-    const satMod = parseInt(getTextByPathList(clrNode, ['a:satMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(satMod)) {
-      color = applySatMod(color, satMod, hasAlpha)
-    }
-
-    // shade: 阴影
-    const shade = parseInt(getTextByPathList(clrNode, ['a:shade', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(shade)) {
-      color = applyShade(color, shade, hasAlpha)
-    }
-
-    // tint: 色调
-    const tint = parseInt(getTextByPathList(clrNode, ['a:tint', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(tint)) {
-      color = applyTint(color, tint, hasAlpha)
-    }
+    const result = applyColorModifiers(color, clrNode, true)
+    resultColor = result.color
   }
 
   // 确保颜色有 # 前缀
-  if (color && !color.startsWith('#')) {
-    color = '#' + color
+  if (resultColor && !resultColor.startsWith('#')) {
+    resultColor = '#' + resultColor
   }
 
-  return color
+  return resultColor
 }
 
 /**
- * 解析颜色节点
- * @param node 包含颜色信息的节点（如 solidFill、fillRef 等）
- * @param context 解析上下文
+ * 解析颜色节点（通用入口）
+ *
+ * @description
+ * 通用的颜色解析入口函数，委托给 resolveSolidFill 处理。
+ * 适用于不确定颜色节点类型的情况。
+ *
+ * @param node - 包含颜色信息的节点（如 solidFill、fillRef 等）
+ * @param context - 解析上下文
  * @returns 十六进制颜色字符串（带 # 前缀）
  */
 export function resolveColor(
@@ -499,9 +655,25 @@ export function resolveColor(
 
 /**
  * 解析纯色填充节点，返回颜色和透明度
- * @param solidFill solidFill XML 节点
- * @param context 解析上下文
- * @returns 包含颜色和可选透明度的对象
+ *
+ * @description
+ * 与 resolveSolidFill 类似，但将透明度作为单独的属性返回，
+ * 而不是合并到颜色值中。适用于需要单独处理透明度的场景。
+ *
+ * @param solidFill - solidFill XML 节点
+ * @param context - 解析上下文
+ * @param clrMap - 可选的颜色映射覆盖
+ * @param phClr - 可选的占位符颜色
+ * @returns 包含 color（十六进制）和可选 alpha（0-1）的对象
+ *
+ * @example
+ * ```typescript
+ * const { color, alpha } = resolveSolidFillWithAlpha(
+ *   { 'a:srgbClr': { attrs: { val: 'FF0000' }, 'a:alpha': { attrs: { val: '50000' } } } },
+ *   context
+ * );
+ * // color = '#FF0000', alpha = 0.5
+ * ```
  */
 export function resolveSolidFillWithAlpha(
   solidFill: XmlObject | undefined,
@@ -511,113 +683,28 @@ export function resolveSolidFillWithAlpha(
 ): { color: string; alpha?: number } {
   if (!solidFill) return { color: '' }
 
-  let color = ''
-  let alpha: number | undefined
-  let clrNode: XmlObject | undefined
-
-  // srgbClr: RGB 颜色
-  if (solidFill['a:srgbClr']) {
-    clrNode = solidFill['a:srgbClr']
-    color = getTextByPathList(clrNode, ['attrs', 'val']) as string || ''
-  }
-  // schemeClr: 主题颜色
-  else if (solidFill['a:schemeClr']) {
-    clrNode = solidFill['a:schemeClr']
-    const schemeClr = 'a:' + (getTextByPathList(clrNode, ['attrs', 'val']) as string || '')
-    color = getSchemeColorFromTheme(schemeClr, context, clrMap, phClr)
-  }
-  // scrgbClr: RGB 百分比
-  else if (solidFill['a:scrgbClr']) {
-    clrNode = solidFill['a:scrgbClr']
-    const attrs = clrNode!['attrs'] || {}
-    const r = parseFloat((attrs['r'] || '0').toString().replace('%', '')) / 100
-    const g = parseFloat((attrs['g'] || '0').toString().replace('%', '')) / 100
-    const b = parseFloat((attrs['b'] || '0').toString().replace('%', '')) / 100
-    color = toHex(255 * r) + toHex(255 * g) + toHex(255 * b)
-  }
-  // prstClr: 预设颜色
-  else if (solidFill['a:prstClr']) {
-    clrNode = solidFill['a:prstClr']
-    const prstClr = getTextByPathList(clrNode, ['attrs', 'val']) as string || ''
-    color = PRESET_COLORS[prstClr.toLowerCase()] || '000000'
-  }
-  // hslClr: HSL 颜色
-  else if (solidFill['a:hslClr']) {
-    clrNode = solidFill['a:hslClr']
-    const attrs = clrNode!['attrs'] || {}
-    const hue = parseFloat(attrs['hue'] || '0') / 100000
-    const sat = parseFloat((attrs['sat'] || '0').toString().replace('%', '')) / 100
-    const lum = parseFloat((attrs['lum'] || '0').toString().replace('%', '')) / 100
-    const rgb = hslToRgb(hue, sat, lum)
-    color = toHex(rgb.r) + toHex(rgb.g) + toHex(rgb.b)
-  }
-  // sysClr: 系统颜色
-  else if (solidFill['a:sysClr']) {
-    clrNode = solidFill['a:sysClr']
-    const sysClr = getTextByPathList(clrNode, ['attrs', 'lastClr']) as string
-    if (sysClr) color = sysClr
-  }
+  // 解析基础颜色
+  const { color, clrNode } = parseBaseColor(solidFill, context, clrMap, phClr)
 
   // 如果没有颜色节点，但有 fillRef（样式引用）
   if (!color && solidFill['a:fillRef']) {
     return resolveSolidFillWithAlpha(solidFill['a:fillRef'], context, clrMap, phClr)
   }
 
-  // 提取 alpha 透明度（0-100000 范围，需要转换为 0-1）
-  if (clrNode) {
-    const alphaValue = getTextByPathList(clrNode, ['a:alpha', 'attrs', 'val'])
-    if (alphaValue) {
-      const parsedAlpha = parseInt(alphaValue as string, 10) / 100000
-      if (!isNaN(parsedAlpha)) {
-        alpha = parsedAlpha
-      }
-    }
+  // 应用颜色修饰符（不将 alpha 合并到颜色值中）
+  let resultColor = color
+  let alpha: number | undefined
 
-    // 应用其他颜色修饰符（不影响 alpha）
-    // 注意：这里我们只应用修饰符到颜色，不改变 alpha
-    const hasAlpha = false
-
-    // hueMod: 色调调制
-    const hueMod = parseInt(getTextByPathList(clrNode, ['a:hueMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(hueMod)) {
-      color = applyHueMod(color, hueMod, hasAlpha)
-    }
-
-    // lumMod: 亮度调制
-    const lumMod = parseInt(getTextByPathList(clrNode, ['a:lumMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(lumMod)) {
-      color = applyLumMod(color, lumMod, hasAlpha)
-    }
-
-    // lumOff: 亮度偏移
-    const lumOff = parseInt(getTextByPathList(clrNode, ['a:lumOff', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(lumOff)) {
-      color = applyLumOff(color, lumOff, hasAlpha)
-    }
-
-    // satMod: 饱和度调制
-    const satMod = parseInt(getTextByPathList(clrNode, ['a:satMod', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(satMod)) {
-      color = applySatMod(color, satMod, hasAlpha)
-    }
-
-    // shade: 阴影
-    const shade = parseInt(getTextByPathList(clrNode, ['a:shade', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(shade)) {
-      color = applyShade(color, shade, hasAlpha)
-    }
-
-    // tint: 色调
-    const tint = parseInt(getTextByPathList(clrNode, ['a:tint', 'attrs', 'val']) as string || '') / 100000
-    if (!isNaN(tint)) {
-      color = applyTint(color, tint, hasAlpha)
-    }
+  if (clrNode && color) {
+    const result = applyColorModifiers(color, clrNode, false)
+    resultColor = result.color
+    alpha = result.alpha
   }
 
   // 确保颜色有 # 前缀
-  if (color && !color.startsWith('#')) {
-    color = '#' + color
+  if (resultColor && !resultColor.startsWith('#')) {
+    resultColor = '#' + resultColor
   }
 
-  return { color, alpha }
+  return { color: resultColor, alpha }
 }

@@ -1,17 +1,45 @@
 # PPTist Backend
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/typescript-5%2B-blue)](https://www.typescriptlang.org/)
+
 PPTX to PPTist encrypted format conversion service with dual output support.
 
 ## Features
 
-- 📄 Convert PPTX files to PPTist-compatible format
-- 🔒 AES encryption (CryptoJS compatible)
-- 📦 Dual output: JSON + encrypted formats
-- 🚀 Fast streaming processing
-- 📦 Support for images, videos, audio, charts, tables, and more
-- 🛡️ Rate limiting and file validation
+- 📄 **PPTX 解析** - 完整支持 Office Open XML (ECMA-376) 标准
+- 🔄 **格式转换** - 将 PPTX 转换为 PPTist 兼容格式
+- 🔒 **AES 加密** - CryptoJS 兼容的加密输出
+- 📦 **双输出** - 支持 JSON 和加密格式同时输出
+- 🚀 **高性能** - 流式处理，支持大文件
+- 🎨 **元素支持** - 文本、形状、图片、视频、音频、表格、图表等
+- 🛡️ **安全防护** - 文件验证、速率限制、大小限制
+
+## Supported Elements
+
+| Element | Support | Description |
+|---------|---------|-------------|
+| Text | ✅ Full | Text with formatting, paragraphs |
+| Shape | ✅ Full | Basic shapes, paths, fills |
+| Image | ✅ Full | Embedded images (PNG, JPG, GIF, etc.) |
+| Video | ✅ Full | Embedded videos (MP4, etc.) |
+| Audio | ✅ Full | Embedded audio (MP3, WAV, etc.) |
+| Line | ✅ Full | Connectors with arrows |
+| Table | ✅ Basic | Basic table structure |
+| Chart | ⚠️ Partial | Chart type detection, placeholder data |
+| LaTeX | ⚠️ Partial | Requires LaTeX source |
+| SmartArt | ❌ Skipped | Not supported, warning issued |
+| Macro/VBA | ❌ Skipped | Not supported, warning issued |
 
 ## Quick Start
+
+### Prerequisites
+
+- Node.js 20+ LTS
+- npm or pnpm
+
+### Installation
 
 ```bash
 # Install dependencies
@@ -25,6 +53,16 @@ npm run dev
 ```
 
 Server will start at http://localhost:3000
+
+### Production
+
+```bash
+# Build
+npm run build
+
+# Start production server
+npm start
+```
 
 ## API Endpoints
 
@@ -125,22 +163,40 @@ npm run lint         # ESLint check
 npm run format       # Prettier format
 ```
 
-## Supported Elements
+## Project Structure
 
-| Element | Support Level |
-|---------|---------------|
-| Text | ✅ Full support |
-| Images | ✅ Full support |
-| Shapes | ✅ Basic shapes |
-| Lines | ✅ With arrow support |
-| Videos | ✅ Embedded videos |
-| Audio | ✅ Embedded audio |
-| Tables | ✅ Basic tables |
-| Charts | ⚠️ Placeholder data |
-| LaTeX | ⚠️ Requires LaTeX source |
-| SmartArt | ⚠️ Skipped with warning |
-| Macros | ⚠️ Skipped with warning |
-| ActiveX | ⚠️ Skipped with warning |
+```
+src/
+├── app.ts                    # Fastify application entry
+├── index.ts                  # Server entry point
+├── config/                   # Configuration management
+│   └── index.ts
+├── modules/                  # Business modules
+│   └── conversion/           # PPTX conversion module
+│       ├── context/          # Parsing context
+│       ├── converters/       # Element converters
+│       ├── detectors/        # File/content detectors
+│       ├── generators/       # SVG/HTML generators
+│       ├── parsers/          # Specialized parsers
+│       ├── resolvers/        # Property resolvers
+│       ├── routes/           # API routes
+│       ├── services/         # Core services
+│       ├── types/            # Type definitions
+│       └── utils/            # Utility functions
+├── types/                    # Global type definitions
+│   └── index.ts
+└── utils/                    # Global utilities
+    ├── crypto.ts
+    ├── errors.ts
+    ├── error-handler.ts
+    └── logger.ts
+```
+
+## Documentation
+
+- [Architecture Design](docs/architecture.md) - Detailed architecture documentation
+- [API Reference](docs/api.md) - Complete API documentation
+- [Contributing Guide](docs/contributing.md) - How to contribute
 
 ## Testing
 
@@ -151,19 +207,8 @@ npm test
 # Run with coverage
 npm run test:coverage
 
-# Test dual output (both formats)
-curl -X POST "http://localhost:3000/api/v1/convert?format=both" \
-  -F "file=@test.pptx"
-
-# Test JSON only
-curl -X POST "http://localhost:3000/api/v1/convert?format=json" \
-  -F "file=@test.pptx" \
-  --output pptist-Conversion.json
-
-# Test PPTist only (default - backward compatible)
-curl -X POST http://localhost:3000/api/v1/convert \
-  -F "file=@test.pptx" \
-  --output pptist-Conversion.pptist
+# Watch mode
+npm run test:watch
 ```
 
 ## Importing into PPTist
