@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentScriptType="text/ecmascript" zoomAndPan="magnify" contentStyleType="text/css" style="stroke-opacity: 1.0;" version="1.0" width="48" fill="none" preserveAspectRatio="xMidYMid meet" viewBox="0 0 48 48" height="48" opacity="1.0">
+<path stroke-linecap="round" fill-opacity="1.0" fill="#C77DFF" stroke-linejoin="round" d="M10 44H38C39.1046 44 40 43.1046 40 42V14H30V4H10C8.89543 4 8 4.89543 8 6V42C8 43.1046 8.89543 44 10 44Z" stroke="#C77DFF" stroke-width="2.0"/>
+<path d="M30 4L40 14" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#C77DFF"/>
+<path d="M27 24L32 29L27 34" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="white"/>
+<path d="M21 24L16 29L21 34" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="white"/>
+</svg>

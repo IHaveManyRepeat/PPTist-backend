@@ -74,7 +74,7 @@ function convertTable(element: PPTXTableElement, context: ConversionContext): PP
     width: toPixelX(transform.width),
     height: toPixelY(transform.height),
     rotate: transform.rotation || 0,
-    outline: { style: 'solid', width: 1, color: '000000' },
+    outline: { style: 'solid', width: 1, color: '#000000' },
     colWidths,
     cellMinHeight: 30,
     data: pptistRows,

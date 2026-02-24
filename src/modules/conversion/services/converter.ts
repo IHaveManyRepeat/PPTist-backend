@@ -6,7 +6,7 @@ import { convertElement } from '../converters/index.js'
  * Convert a single PPTX slide to PPTist slide
  */
 export function convertSlide(
-  pptxSlide: { id: string; elements: any[]; background?: any },
+  pptxSlide: { id: string; elements: any[]; background?: any; notes?: string },
   slideIndex: number,
   context: ConversionContext
 ): Slide {
@@ -34,6 +34,7 @@ export function convertSlide(
     id: `slide-${slideIndex + 1}`,
     elements,
     background: convertBackground(pptxSlide),
+    remark: pptxSlide.notes,
   }
 
   return slide

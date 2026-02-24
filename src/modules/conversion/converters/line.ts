@@ -54,7 +54,7 @@ function convertLineToShape(element: PPTXLineElement, context: ConversionContext
     outline: {
       style: style || 'solid',
       width: width || 1,
-      color: color || '000000',
+      color: color || '#000000',
     },
     opacity: 1,
   }

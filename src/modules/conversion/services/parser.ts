@@ -190,6 +190,44 @@ function indexNodes(content: XmlObject): IndexTables {
 }
 
 /**
+ * 从 notesSlide XML 中提取备注文本
+ */
+function extractNotesText(notesContent: XmlObject): string {
+  const spTree = notesContent?.['p:notes']?.['p:cSld']?.['p:spTree']
+  if (!spTree) return ''
+
+  const textParts: string[] = []
+
+  for (const key of Object.keys(spTree)) {
+    if (key !== 'p:sp') continue
+    const shapes = Array.isArray(spTree[key]) ? spTree[key] : [spTree[key]]
+
+    for (const shape of shapes) {
+      const phType = shape?.['p:nvSpPr']?.['p:nvPr']?.['p:ph']?.['attrs']?.['type']
+      if (phType !== 'body') continue
+
+      const txBody = shape?.['p:txBody']
+      if (!txBody) continue
+
+      const paragraphs = txBody['a:p'] || []
+      const pArray = Array.isArray(paragraphs) ? paragraphs : [paragraphs]
+
+      for (const p of pArray) {
+        const runs = p?.['a:r'] || []
+        const rArray = Array.isArray(runs) ? runs : [runs]
+        for (const r of rArray) {
+          const text = r?.['a:t']
+          if (text) textParts.push(String(text))
+        }
+        textParts.push('\n')
+      }
+    }
+  }
+
+  return textParts.join('').trim().replace(/\n{3,}/g, '\n\n')
+}
+
+/**
  * 解析关系文件
  */
 async function parseRelationships(
@@ -250,11 +288,11 @@ async function buildSlideContext(
   zip: JSZip,
   slideFilename: string,
   baseContext: ParsingContext
-): Promise<ParsingContext> {
+): Promise<{ context: ParsingContext; noteFilename?: string }> {
   // 解析幻灯片关系
   const slideName = slideFilename.split('/').pop()?.replace('.xml', '') || 'slide1'
   const relsPath = `ppt/slides/_rels/${slideName}.xml.rels`
-  const { resources: slideResObj, layoutFilename } = await parseRelationships(zip, relsPath)
+  const { resources: slideResObj, layoutFilename, noteFilename } = await parseRelationships(zip, relsPath)
 
   // 解析布局
   let slideLayoutContent: XmlObject = {}
@@ -283,16 +321,19 @@ async function buildSlideContext(
       const slideContent = await readXmlFile(zip, slideFilename)
 
       return {
-        ...baseContext,
-        slideLayoutContent,
-        slideLayoutTables,
-        slideMasterContent,
-        slideMasterTables,
-        slideMasterTextStyles,
-        slideResObj,
-        layoutResObj,
-        masterResObj,
-        slideContent,
+        context: {
+          ...baseContext,
+          slideLayoutContent,
+          slideLayoutTables,
+          slideMasterContent,
+          slideMasterTables,
+          slideMasterTextStyles,
+          slideResObj,
+          layoutResObj,
+          masterResObj,
+          slideContent,
+        },
+        noteFilename,
       }
     }
   }
@@ -301,12 +342,15 @@ async function buildSlideContext(
   const slideContent = await readXmlFile(zip, slideFilename)
 
   return {
-    ...baseContext,
-    slideLayoutContent,
-    slideLayoutTables,
-    slideResObj,
-    layoutResObj,
-    slideContent,
+    context: {
+      ...baseContext,
+      slideLayoutContent,
+      slideLayoutTables,
+      slideResObj,
+      layoutResObj,
+      slideContent,
+    },
+    noteFilename,
   }
 }
 
@@ -326,6 +370,55 @@ function parseTransform(spPr: XmlObject | undefined): PPTXTransform {
     height: parseInt(ext['cy'] || '0', 10),
     rotation: rot ? parseInt(rot, 10) / 60000 : undefined,
   }
+}
+
+/**
+ * 解析文本运行的颜色，支持多层级继承
+ * 继承优先级（从高到低）：
+ * 1. 运行级别: a:r/a:rPr/a:solidFill
+ * 2. 段落默认: a:p/a:pPr/a:defRPr/a:solidFill
+ * 3. 列表级别: a:p/a:pPr/a:lvlXpPr/a:defRPr/a:solidFill (X = 0-8)
+ * 4. 文本体列表样式: a:txBody/a:lstStyle/a:defRPr/a:solidFill
+ */
+function resolveTextColor(
+  run: XmlObject,
+  paragraph: XmlObject,
+  txBody: XmlObject,
+  context: ParsingContext
+): string | undefined {
+  // 1. 运行级别
+  const runSolidFill = run?.['a:rPr']?.['a:solidFill']
+  if (runSolidFill) {
+    return resolveSolidFill(runSolidFill, context)
+  }
+
+  // 2. 段落默认运行属性
+  const pPr = paragraph?.['a:pPr']
+  const defRPrSolidFill = pPr?.['a:defRPr']?.['a:solidFill']
+  if (defRPrSolidFill) {
+    return resolveSolidFill(defRPrSolidFill, context)
+  }
+
+  // 3. 列表级别样式 (a:lvl1pPr 到 a:lvl9pPr)
+  if (pPr) {
+    const levelAttr = pPr?.['attrs']?.['lvl']
+    if (levelAttr !== undefined) {
+      const level = parseInt(String(levelAttr), 10)
+      const lvlPPr = pPr?.[`a:lvl${level}pPr`]
+      const lvlDefRPrSolidFill = lvlPPr?.['a:defRPr']?.['a:solidFill']
+      if (lvlDefRPrSolidFill) {
+        return resolveSolidFill(lvlDefRPrSolidFill, context)
+      }
+    }
+  }
+
+  // 4. 文本体列表样式默认
+  const lstStyleDefRPrSolidFill = txBody?.['a:lstStyle']?.['a:defRPr']?.['a:solidFill']
+  if (lstStyleDefRPrSolidFill) {
+    return resolveSolidFill(lstStyleDefRPrSolidFill, context)
+  }
+
+  return undefined
 }
 
 /**
@@ -352,12 +445,8 @@ function parseTextBodyToParagraphs(
       const rPr = run?.['a:rPr']?.['attrs'] || {}
       const text = run?.['a:t'] || ''
 
-      // 解析颜色
-      let color: string | undefined
-      const solidFill = run?.['a:rPr']?.['a:solidFill']
-      if (solidFill) {
-        color = resolveSolidFill(solidFill, context)
-      }
+      // 解析颜色（支持多层级继承）
+      const color = resolveTextColor(run, p, txBody, context)
 
       runs.push({
         text: String(text),
@@ -677,7 +766,7 @@ async function parseSingleSlide(
   baseContext: ParsingContext
 ): Promise<PPTXSlide> {
   // 构建幻灯片上下文
-  const context = await buildSlideContext(zip, slideFilename, baseContext)
+  const { context, noteFilename } = await buildSlideContext(zip, slideFilename, baseContext)
   context.slideIndex = slideIndex
 
   // 获取幻灯片元素树
@@ -725,10 +814,23 @@ async function parseSingleSlide(
   const backgroundFill = await resolveSlideBackgroundFill(context)
   const background = convertFillToBackground(backgroundFill)
 
+  // 解析备注
+  let notes: string | undefined
+  if (noteFilename) {
+    try {
+      const notesContent = await readXmlFile(zip, noteFilename)
+      const notesText = extractNotesText(notesContent)
+      if (notesText) notes = notesText
+    } catch {
+      // 备注文件可能不存在，忽略
+    }
+  }
+
   return {
     id: `slide-${slideIndex}`,
     elements,
     background,
+    notes,
   }
 }
 

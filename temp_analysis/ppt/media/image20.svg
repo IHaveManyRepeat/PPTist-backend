@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentScriptType="text/ecmascript" zoomAndPan="magnify" contentStyleType="text/css" style="stroke-opacity: 1.0;" version="1.0" width="48" fill="none" preserveAspectRatio="xMidYMid meet" viewBox="0 0 48 48" height="48" opacity="1.0">
+<path d="M21 9H11C9.34315 9 8 10.3431 8 12V33H40V26" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path fill="#41EAD4" fill-opacity="1.0" stroke-width="2.0" d="M4 33H44V35C44 38.3137 41.3137 41 38 41H10C6.68629 41 4 38.3137 4 35V33Z" stroke-linejoin="round" stroke="#41EAD4"/>
+<circle stroke-width="2.0" r="3" cx="35" cy="14" stroke="#41EAD4"/>
+<path d="M35 21V17" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path d="M35 11V7" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path d="M28.9378 17.5L32.4019 15.5" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path d="M37.5982 12.5L41.0623 10.5" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path d="M28.9375 10.5L32.4016 12.5" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+<path d="M37.5982 15.5L41.0623 17.5" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke="#41EAD4"/>
+</svg>

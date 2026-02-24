@@ -22,7 +22,7 @@ function convertShapeText(element: PPTXShapeElement): ShapeText | undefined {
           let html = run.text
           if (run.bold) html = `<b>${html}</b>`
           if (run.italic) html = `<i>${html}</i>`
-          if (run.color) html = `<span style="color: #${run.color}">${html}</span>`
+          if (run.color) html = `<span style="color: ${run.color}">${html}</span>`
           return html
         })
         .join('')
@@ -33,7 +33,7 @@ function convertShapeText(element: PPTXShapeElement): ShapeText | undefined {
   return {
     content: runsHtml,
     defaultFontName: firstRun?.fontName || 'Arial',
-    defaultColor: firstRun?.color || '000000',
+    defaultColor: firstRun?.color || '#000000',
     align: 'middle',
     lineHeight: 1.5,
   }
@@ -96,9 +96,9 @@ function convertShape(element: PPTXShapeElement, context: ConversionContext): PP
       ? {
           style: outline.style || 'solid',
           width: outline.width || 1,
-          color: outline.color || '000000',
+          color: outline.color || '#000000',
         }
-      : { style: 'solid', width: 1, color: '000000' },
+      : { style: 'solid', width: 1, color: '#000000' },
     opacity: 1,
     text: paragraphs ? convertShapeText(element) : undefined,
   }

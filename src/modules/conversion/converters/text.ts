@@ -22,7 +22,7 @@ function runsToHtml(paragraphs: PPTXTextElement['paragraphs']): string {
             html = `<span style="font-size: ${run.fontSize}px">${html}</span>`
           }
           if (run.color) {
-            html = `<span style="color: #${run.color}">${html}</span>`
+            html = `<span style="color: ${run.color}">${html}</span>`
           }
           if (run.fontName) {
             html = `<span style="font-family: ${run.fontName}">${html}</span>`
@@ -56,7 +56,7 @@ function convertText(element: PPTXTextElement, context: ConversionContext): PPTT
   // Get default formatting from first paragraph's first run
   const firstRun = paragraphs[0]?.runs[0]
   const defaultFontName = firstRun?.fontName || 'Arial'
-  const defaultColor = firstRun?.color || '000000'
+  const defaultColor = firstRun?.color || '#000000'
 
   const pptistText: PPTTextElement = {
     id: uuidv4(),
